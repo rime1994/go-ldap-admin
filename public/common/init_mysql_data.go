@@ -860,7 +860,7 @@ func InitData() {
 		},
 		{
 			Flag:       "feishu_user",
-			Attributes: datatypes.JSON(`{"avatar":"avatar","givenName":"name","introduction":"name","jobNumber":"employee_no","mail":"email","mobile":"mobile","nickname":"name","position":"job_title","postalAddress":"work_station","sourceUnionId":"union_id","sourceUserId":"user_id","username":"custom_name_pinyin"}`),
+			Attributes: datatypes.JSON(`{"avatar":"avatar","givenName":"name","introduction":"name","jobNumber":"employee_no","mail":"email","mobile":"mobile","nickname":"name","position":"job_title","postalAddress":"work_station","sourceUnionId":"union_id","sourceUserId":"user_id","username":"custom_uid_short"}`),
 		},
 		{
 			Flag:       "wecom_group",

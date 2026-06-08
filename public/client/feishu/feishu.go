@@ -38,6 +38,7 @@ func GetAllDepts() (ret []map[string]any, err error) {
 				ele := make(map[string]any)
 				ele["name"] = dept.Name
 				ele["custom_name_pinyin"] = tools.ConvertToPinYin(dept.Name)
+				ele["custom_uid_short"] = tools.ConvertToUIDShort(dept.Name)
 				ele["parent_department_id"] = dept.ParentDepartmentID
 				ele["department_id"] = dept.DepartmentID
 				ele["open_department_id"] = dept.OpenDepartmentID
@@ -87,6 +88,7 @@ func GetAllDepts() (ret []map[string]any, err error) {
 
 			ele["name"] = res.Department.Name
 			ele["custom_name_pinyin"] = tools.ConvertToPinYin(res.Department.Name)
+			ele["custom_uid_short"] = tools.ConvertToUIDShort(res.Department.Name)
 			if isInDeptList(res.Department.ParentDepartmentID) {
 				ele["parent_department_id"] = res.Department.ParentDepartmentID
 			} else {
@@ -117,6 +119,7 @@ func GetAllDepts() (ret []map[string]any, err error) {
 						ele := make(map[string]any)
 						ele["name"] = dept.Name
 						ele["custom_name_pinyin"] = tools.ConvertToPinYin(dept.Name)
+						ele["custom_uid_short"] = tools.ConvertToUIDShort(dept.Name)
 						ele["parent_department_id"] = dept.ParentDepartmentID
 						ele["department_id"] = dept.DepartmentID
 						ele["open_department_id"] = dept.OpenDepartmentID
@@ -170,6 +173,7 @@ func GetAllUsers() (ret []map[string]any, err error) {
 				ele := make(map[string]any)
 				ele["name"] = user.Name
 				ele["custom_name_pinyin"] = tools.ConvertToPinYin(user.Name)
+				ele["custom_uid_short"] = tools.ConvertToUIDShort(user.Name)
 				ele["union_id"] = user.UnionID
 				ele["user_id"] = user.UserID
 				ele["open_id"] = user.OpenID

@@ -5,7 +5,7 @@ networks:
 
 services:
   go-ldap-admin:
-    image: docker.cnb.cool/opsre/go-ldap-admin
+    image: ghcr.io/rime1994/go-ldap-admin:latest
     container_name: go-ldap-admin
     hostname: go-ldap-admin
     restart: always

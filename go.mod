@@ -1,6 +1,6 @@
 module github.com/eryajf/go-ldap-admin
 
-go 1.25
+go 1.24
 
 require (
 	github.com/appleboy/gin-jwt/v2 v2.6.4

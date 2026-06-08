@@ -53,3 +53,23 @@ func TestEncodePass(t *testing.T) {
 		fmt.Println("its not match")
 	}
 }
+
+func TestConvertToUIDShort(t *testing.T) {
+	cases := []struct {
+		input string
+		want  string
+	}{
+		{"王建国", "jgwang"},   // 3-char: surname wang, given jian+guo → jg
+		{"张三", "szhang"},    // 2-char: surname zhang, given san → s
+		{"欧阳娜娜", "nnouyang"}, // compound surname: ouyang, given na+na → nn
+		{"芳", "fang"},        // single char — surname only, no prefix
+		{"李", "li"},          // single char
+		{"john", "ohnj"},     // ASCII: j=surname full, o+h+n → given initials
+	}
+	for _, c := range cases {
+		got := ConvertToUIDShort(c.input)
+		if got != c.want {
+			t.Errorf("ConvertToUIDShort(%q) = %q, want %q", c.input, got, c.want)
+		}
+	}
+}

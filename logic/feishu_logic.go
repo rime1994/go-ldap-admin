@@ -2,6 +2,7 @@ package logic
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/eryajf/go-ldap-admin/config"
@@ -188,10 +189,25 @@ func (d FeiShuLogic) AddUsers(user *model.User) error {
 	user.Creator = "system"
 	user.Source = config.Conf.FeiShu.Flag
 	user.Password = config.Conf.Ldap.UserInitPassword
-	user.UserDN = fmt.Sprintf("uid=%s,%s", user.Username, config.Conf.Ldap.UserDN)
 
-	// 根据 user_dn 查询用户,不存在则创建
-	if !isql.User.Exist(tools.H{"user_dn": user.UserDN}) {
+	// 以飞书 source_user_id 为唯一键判断用户是否已存在
+	// 兜底：若 source_user_id 未命中但 mobile 已存在（老数据迁移场景），
+	// 认领该记录并补写 source_user_id，进入更新分支而非重复创建
+	if !isql.User.Exist(tools.H{"source_user_id": user.SourceUserId}) &&
+		user.Mobile != "" && isql.User.Exist(tools.H{"mobile": user.Mobile}) {
+		// 把旧记录的 source_user_id 补写为飞书真实 ID，后续走更新分支
+		oldByMobile := new(model.User)
+		if err2 := isql.User.Find(tools.H{"mobile": user.Mobile}, oldByMobile); err2 == nil {
+			oldByMobile.SourceUserId = user.SourceUserId
+			_ = isql.User.Update(oldByMobile)
+		}
+	}
+
+	if !isql.User.Exist(tools.H{"source_user_id": user.SourceUserId}) {
+		// 新用户：确保 username 唯一，冲突时追加数字后缀
+		user.Username = uniqueUsername(user.Username)
+		user.UserDN = fmt.Sprintf("uid=%s,%s", user.Username, config.Conf.Ldap.UserDN)
+
 		// 获取用户将要添加的分组
 		groups, err := isql.Group.GetGroupByIds(tools.StringToSlice(user.DepartmentId, ","))
 		if err != nil {
@@ -213,7 +229,7 @@ func (d FeiShuLogic) AddUsers(user *model.User) error {
 		if config.Conf.FeiShu.IsUpdateSyncd {
 			// 先获取用户信息
 			oldData := new(model.User)
-			err = isql.User.Find(tools.H{"user_dn": user.UserDN}, oldData)
+			err = isql.User.Find(tools.H{"source_user_id": user.SourceUserId}, oldData)
 			if err != nil {
 				return err
 			}
@@ -268,4 +284,18 @@ func (d FeiShuLogic) AddUsers(user *model.User) error {
 		}
 	}
 	return nil
+}
+
+// uniqueUsername returns base if it is not taken, otherwise appends an
+// incrementing numeric suffix (base2, base3, …) until a free name is found.
+func uniqueUsername(base string) string {
+	if !isql.User.Exist(tools.H{"username": base}) {
+		return base
+	}
+	for i := 2; ; i++ {
+		candidate := base + strconv.Itoa(i)
+		if !isql.User.Exist(tools.H{"username": candidate}) {
+			return candidate
+		}
+	}
 }

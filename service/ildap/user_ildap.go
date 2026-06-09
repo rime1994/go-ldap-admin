@@ -29,6 +29,7 @@ func (x UserService) Add(user *model.User) error {
 	add.Attribute("postalAddress", []string{user.PostalAddress})
 	add.Attribute("mobile", []string{user.Mobile})
 	add.Attribute("uid", []string{user.Username})
+	add.Attribute("employeeType", []string{user.SourceUserId})
 	var pass string
 	if config.Conf.Ldap.UserPasswordEncryptionType == "clear" {
 		pass = tools.NewParPasswd(user.Password)
@@ -61,6 +62,7 @@ func (x UserService) Update(oldusername string, user *model.User) error {
 	modify.Replace("givenName", []string{user.GivenName})
 	modify.Replace("postalAddress", []string{user.PostalAddress})
 	modify.Replace("mobile", []string{user.Mobile})
+	modify.Replace("employeeType", []string{user.SourceUserId})
 
 	// 获取 LDAP 连接
 	conn, err := common.GetLDAPConn()

@@ -16,7 +16,7 @@ type UserService struct{}
 // 创建资源
 func (x UserService) Add(user *model.User) error {
 	add := ldap.NewAddRequest(user.UserDN, nil)
-	add.Attribute("objectClass", []string{"inetOrgPerson"})
+	add.Attribute("objectClass", []string{"inetOrgPerson", "extensibleObject"})
 	add.Attribute("cn", []string{user.Username})
 	add.Attribute("sn", []string{user.Nickname})
 	add.Attribute("businessCategory", []string{user.Departments})

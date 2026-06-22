@@ -43,7 +43,12 @@ func (d *FeiShuLogic) SyncFeiShuDepts(c *gin.Context, req any) (data any, rspErr
 	// 2.将远程数据转换成树
 	deptTree := GroupListToTree(fmt.Sprintf("%s_0", config.Conf.FeiShu.Flag), depts)
 
-	// 3.根据树进行创建
+	// 3.确保 NAS 专用组容器存在
+	if err = ildap.Group.EnsureNasGroupsOU(); err != nil {
+		common.Log.Warnf("SyncFeiShuDepts: 创建 ou=nas-groups 失败: %v", err)
+	}
+
+	// 4.根据树进行创建
 	err = d.addDepts(deptTree.Children)
 	if err != nil {
 		errMsg := fmt.Sprintf("创建飞书部门失败：%s", err.Error())
@@ -92,17 +97,16 @@ func (d FeiShuLogic) AddDepts(group *model.Group) error {
 	group.Source = config.Conf.FeiShu.Flag
 	group.GroupDN = fmt.Sprintf("cn=%s,%s", group.GroupName, parentGroup.GroupDN)
 
+	group.GidNumber = tools.HashToPosixID(group.SourceDeptId)
 	if !isql.Group.Exist(tools.H{"group_dn": group.GroupDN}) {
-		group.GidNumber = tools.HashToPosixID(group.SourceDeptId)
 		err = CommonAddGroup(group)
 		if err != nil {
 			return tools.NewOperationI18nError("sync.add_dept_failed", i18n.Args{"dept": group.GroupName, "error": err.Error()})
 		}
-	} else {
-		// 存量部门：补写 posixGroup（幂等，已有则跳过）
-		if err2 := ildap.Group.BackfillGroupPosix(group.GroupDN, tools.HashToPosixID(group.SourceDeptId)); err2 != nil {
-			common.Log.Warnf("AddDepts: 补写 posixGroup 失败 [%s]: %v", group.GroupName, err2)
-		}
+	}
+	// 无论新建还是已存在，都同步到 NAS 专用组（幂等）
+	if err2 := ildap.Group.SyncNasGroup(group); err2 != nil {
+		common.Log.Warnf("AddDepts: 同步 NAS 组失败 [%s]: %v", group.GroupName, err2)
 	}
 	return nil
 }

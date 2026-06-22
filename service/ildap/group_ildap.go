@@ -1,6 +1,7 @@
 package ildap
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -21,12 +22,11 @@ func (x GroupService) Add(g *model.Group) error { //organizationalUnit
 	}
 	add := ldap.NewAddRequest(g.GroupDN, nil)
 	if g.GroupType == "ou" {
-		add.Attribute("objectClass", []string{"organizationalUnit", "top"}) // 如果定义了 groupOfNAmes，那么必须指定member，否则报错如下：object class 'groupOfNames' requires attribute 'member'
+		add.Attribute("objectClass", []string{"organizationalUnit", "top"})
 	}
 	if g.GroupType == "cn" {
-		add.Attribute("objectClass", []string{"groupOfUniqueNames", "posixGroup", "top"})
+		add.Attribute("objectClass", []string{"groupOfUniqueNames", "top"})
 		add.Attribute("uniqueMember", []string{config.Conf.Ldap.AdminDN})
-		add.Attribute("gidNumber", []string{strconv.Itoa(g.GidNumber)})
 	}
 	add.Attribute(g.GroupType, []string{g.GroupName})
 	add.Attribute("description", []string{g.Remark})
@@ -89,9 +89,6 @@ func (x GroupService) AddUserToGroup(dn, udn string) error {
 	}
 	newmr := ldap.NewModifyRequest(dn, nil)
 	newmr.Add("uniqueMember", []string{udn})
-	if uid := uidFromDN(udn); uid != "" {
-		newmr.Add("memberUid", []string{uid})
-	}
 
 	conn, err := common.GetLDAPConn()
 	defer common.PutLADPConn(conn)
@@ -105,9 +102,6 @@ func (x GroupService) AddUserToGroup(dn, udn string) error {
 func (x GroupService) RemoveUserFromGroup(gdn, udn string) error {
 	newmr := ldap.NewModifyRequest(gdn, nil)
 	newmr.Delete("uniqueMember", []string{udn})
-	if uid := uidFromDN(udn); uid != "" {
-		newmr.Delete("memberUid", []string{uid})
-	}
 
 	conn, err := common.GetLDAPConn()
 	defer common.PutLADPConn(conn)
@@ -160,9 +154,14 @@ func (x GroupService) ListGroupDN() (groups []*model.Group, err error) {
 	return
 }
 
-// BackfillGroupPosix 为已存在但缺少 posixGroup 的 cn 组补写 POSIX 属性。
-// 从现有 uniqueMember 中提取 uid 填入 memberUid。
-func (x GroupService) BackfillGroupPosix(gdn string, gidNum int) error {
+// nasGroupDN 返回 NAS 专用组的 DN。
+func nasGroupDN(groupName string) string {
+	return fmt.Sprintf("cn=%s,ou=nas-groups,%s", groupName, config.Conf.Ldap.BaseDN)
+}
+
+// EnsureNasGroupsOU 确保 ou=nas-groups 容器存在，不存在则创建。
+func (x GroupService) EnsureNasGroupsOU() error {
+	ouDN := fmt.Sprintf("ou=nas-groups,%s", config.Conf.Ldap.BaseDN)
 	conn, err := common.GetLDAPConn()
 	defer common.PutLADPConn(conn)
 	if err != nil {
@@ -170,35 +169,70 @@ func (x GroupService) BackfillGroupPosix(gdn string, gidNum int) error {
 	}
 
 	sr, err := conn.Search(ldap.NewSearchRequest(
-		gdn, ldap.ScopeBaseObject, ldap.NeverDerefAliases, 0, 0, false,
-		"(objectClass=*)", []string{"objectClass", "uniqueMember"}, nil,
+		ouDN, ldap.ScopeBaseObject, ldap.NeverDerefAliases, 0, 0, false,
+		"(objectClass=*)", []string{"dn"}, nil,
 	))
+	if err == nil && len(sr.Entries) > 0 {
+		return nil
+	}
+
+	add := ldap.NewAddRequest(ouDN, nil)
+	add.Attribute("objectClass", []string{"organizationalUnit", "top"})
+	add.Attribute("ou", []string{"nas-groups"})
+	return conn.Add(add)
+}
+
+// SyncNasGroup 在 ou=nas-groups 下为部门创建或更新对应的 posixGroup 条目。
+// memberUid 从现有 groupOfUniqueNames 条目的 uniqueMember 中提取。
+func (x GroupService) SyncNasGroup(g *model.Group) error {
+	conn, err := common.GetLDAPConn()
+	defer common.PutLADPConn(conn)
 	if err != nil {
 		return err
 	}
-	if len(sr.Entries) == 0 {
-		return nil
-	}
-	entry := sr.Entries[0]
 
-	for _, cls := range entry.GetAttributeValues("objectClass") {
-		if cls == "posixGroup" {
-			return nil // 已有 posixGroup，跳过
-		}
-	}
-
+	// 从已有的 groupOfUniqueNames 条目读取 uniqueMember，提取 uid 列表
 	var memberUids []string
-	for _, member := range entry.GetAttributeValues("uniqueMember") {
-		if uid := uidFromDN(member); uid != "" {
-			memberUids = append(memberUids, uid)
+	if sr, e := conn.Search(ldap.NewSearchRequest(
+		g.GroupDN, ldap.ScopeBaseObject, ldap.NeverDerefAliases, 0, 0, false,
+		"(objectClass=*)", []string{"uniqueMember"}, nil,
+	)); e == nil && len(sr.Entries) > 0 {
+		for _, member := range sr.Entries[0].GetAttributeValues("uniqueMember") {
+			if uid := uidFromDN(member); uid != "" {
+				// 过滤掉 cn=admin 之类的非 uid= 占位条目
+				if strings.HasPrefix(strings.ToLower(member), "uid=") {
+					memberUids = append(memberUids, uid)
+				}
+			}
 		}
 	}
 
-	modify := ldap.NewModifyRequest(gdn, nil)
-	modify.Add("objectClass", []string{"posixGroup"})
-	modify.Add("gidNumber", []string{strconv.Itoa(gidNum)})
+	nasDN := nasGroupDN(g.GroupName)
+	gidStr := strconv.Itoa(g.GidNumber)
+
+	// 检查 NAS 组是否已存在
+	existSr, err := conn.Search(ldap.NewSearchRequest(
+		nasDN, ldap.ScopeBaseObject, ldap.NeverDerefAliases, 0, 0, false,
+		"(objectClass=*)", []string{"cn"}, nil,
+	))
+
+	if err != nil || len(existSr.Entries) == 0 {
+		// 不存在则新建
+		add := ldap.NewAddRequest(nasDN, nil)
+		add.Attribute("objectClass", []string{"posixGroup", "top"})
+		add.Attribute("cn", []string{g.GroupName})
+		add.Attribute("gidNumber", []string{gidStr})
+		if len(memberUids) > 0 {
+			add.Attribute("memberUid", memberUids)
+		}
+		return conn.Add(add)
+	}
+
+	// 已存在则更新 gidNumber 和 memberUid
+	modify := ldap.NewModifyRequest(nasDN, nil)
+	modify.Replace("gidNumber", []string{gidStr})
 	if len(memberUids) > 0 {
-		modify.Add("memberUid", memberUids)
+		modify.Replace("memberUid", memberUids)
 	}
 	return conn.Modify(modify)
 }

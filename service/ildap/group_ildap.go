@@ -1,6 +1,9 @@
 package ildap
 
 import (
+	"strconv"
+	"strings"
+
 	"github.com/eryajf/go-ldap-admin/config"
 	"github.com/eryajf/go-ldap-admin/model"
 	"github.com/eryajf/go-ldap-admin/public/common"
@@ -21,8 +24,9 @@ func (x GroupService) Add(g *model.Group) error { //organizationalUnit
 		add.Attribute("objectClass", []string{"organizationalUnit", "top"}) // 如果定义了 groupOfNAmes，那么必须指定member，否则报错如下：object class 'groupOfNames' requires attribute 'member'
 	}
 	if g.GroupType == "cn" {
-		add.Attribute("objectClass", []string{"groupOfUniqueNames", "top"})
-		add.Attribute("uniqueMember", []string{config.Conf.Ldap.AdminDN}) // 所以这里创建组的时候，默认将admin加入其中，以免创建时没有人员而报上边的错误
+		add.Attribute("objectClass", []string{"groupOfUniqueNames", "posixGroup", "top"})
+		add.Attribute("uniqueMember", []string{config.Conf.Ldap.AdminDN})
+		add.Attribute("gidNumber", []string{strconv.Itoa(g.GidNumber)})
 	}
 	add.Attribute(g.GroupType, []string{g.GroupName})
 	add.Attribute("description", []string{g.Remark})
@@ -80,36 +84,47 @@ func (x GroupService) Delete(gdn string) error {
 
 // AddUserToGroup 添加用户到分组
 func (x GroupService) AddUserToGroup(dn, udn string) error {
-	//判断dn是否以ou开头
 	if dn[:3] == "ou=" {
 		return tools.NewLdapI18nError("group.ou_cannot_add_user", nil)
 	}
 	newmr := ldap.NewModifyRequest(dn, nil)
 	newmr.Add("uniqueMember", []string{udn})
+	if uid := uidFromDN(udn); uid != "" {
+		newmr.Add("memberUid", []string{uid})
+	}
 
-	// 获取 LDAP 连接
 	conn, err := common.GetLDAPConn()
 	defer common.PutLADPConn(conn)
 	if err != nil {
 		return err
 	}
-
 	return conn.Modify(newmr)
 }
 
-// DelUserFromGroup 将用户从分组删除
+// RemoveUserFromGroup 将用户从分组删除
 func (x GroupService) RemoveUserFromGroup(gdn, udn string) error {
 	newmr := ldap.NewModifyRequest(gdn, nil)
 	newmr.Delete("uniqueMember", []string{udn})
+	if uid := uidFromDN(udn); uid != "" {
+		newmr.Delete("memberUid", []string{uid})
+	}
 
-	// 获取 LDAP 连接
 	conn, err := common.GetLDAPConn()
 	defer common.PutLADPConn(conn)
 	if err != nil {
 		return err
 	}
-
 	return conn.Modify(newmr)
+}
+
+// uidFromDN extracts the uid value from a DN like "uid=zhangw,ou=people,...".
+func uidFromDN(udn string) string {
+	parts := strings.SplitN(udn, ",", 2)
+	kv := strings.SplitN(parts[0], "=", 2)
+	if len(kv) != 2 {
+		return ""
+	}
+	return kv[1]
 }
 
 // DelUserFromGroup 将用户从分组删除
@@ -143,4 +158,47 @@ func (x GroupService) ListGroupDN() (groups []*model.Group, err error) {
 		}
 	}
 	return
+}
+
+// BackfillGroupPosix 为已存在但缺少 posixGroup 的 cn 组补写 POSIX 属性。
+// 从现有 uniqueMember 中提取 uid 填入 memberUid。
+func (x GroupService) BackfillGroupPosix(gdn string, gidNum int) error {
+	conn, err := common.GetLDAPConn()
+	defer common.PutLADPConn(conn)
+	if err != nil {
+		return err
+	}
+
+	sr, err := conn.Search(ldap.NewSearchRequest(
+		gdn, ldap.ScopeBaseObject, ldap.NeverDerefAliases, 0, 0, false,
+		"(objectClass=*)", []string{"objectClass", "uniqueMember"}, nil,
+	))
+	if err != nil {
+		return err
+	}
+	if len(sr.Entries) == 0 {
+		return nil
+	}
+	entry := sr.Entries[0]
+
+	for _, cls := range entry.GetAttributeValues("objectClass") {
+		if cls == "posixGroup" {
+			return nil // 已有 posixGroup，跳过
+		}
+	}
+
+	var memberUids []string
+	for _, member := range entry.GetAttributeValues("uniqueMember") {
+		if uid := uidFromDN(member); uid != "" {
+			memberUids = append(memberUids, uid)
+		}
+	}
+
+	modify := ldap.NewModifyRequest(gdn, nil)
+	modify.Add("objectClass", []string{"posixGroup"})
+	modify.Add("gidNumber", []string{strconv.Itoa(gidNum)})
+	if len(memberUids) > 0 {
+		modify.Add("memberUid", memberUids)
+	}
+	return conn.Modify(modify)
 }

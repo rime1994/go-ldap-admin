@@ -93,9 +93,15 @@ func (d FeiShuLogic) AddDepts(group *model.Group) error {
 	group.GroupDN = fmt.Sprintf("cn=%s,%s", group.GroupName, parentGroup.GroupDN)
 
 	if !isql.Group.Exist(tools.H{"group_dn": group.GroupDN}) {
+		group.GidNumber = tools.HashToPosixID(group.SourceDeptId)
 		err = CommonAddGroup(group)
 		if err != nil {
 			return tools.NewOperationI18nError("sync.add_dept_failed", i18n.Args{"dept": group.GroupName, "error": err.Error()})
+		}
+	} else {
+		// 存量部门：补写 posixGroup（幂等，已有则跳过）
+		if err2 := ildap.Group.BackfillGroupPosix(group.GroupDN, tools.HashToPosixID(group.SourceDeptId)); err2 != nil {
+			common.Log.Warnf("AddDepts: 补写 posixGroup 失败 [%s]: %v", group.GroupName, err2)
 		}
 	}
 	return nil
@@ -234,7 +240,7 @@ func (d FeiShuLogic) AddUsers(user *model.User, takenUID, takenGID map[int]bool,
 			gidSeed = groups[0].SourceDeptId
 		}
 		user.UidNumber = tools.GeneratePosixID(user.SourceUserId, takenUID)
-		user.GidNumber = tools.GeneratePosixID(gidSeed, takenGID)
+		user.GidNumber = tools.HashToPosixID(gidSeed)
 
 		// 添加用户
 		err = CommonAddUser(user, groups)
@@ -252,7 +258,7 @@ func (d FeiShuLogic) AddUsers(user *model.User, takenUID, takenGID map[int]bool,
 					gidSeed = bGroups[0].SourceDeptId
 				}
 				uidNum := tools.GeneratePosixID(user.SourceUserId, takenUID)
-				gidNum := tools.GeneratePosixID(gidSeed, takenGID)
+				gidNum := tools.HashToPosixID(gidSeed)
 				if err2 = ildap.User.BackfillPosixAttrs(oldData.UserDN, uidNum, gidNum, oldData.Username); err2 != nil {
 					common.Log.Warnf("SyncFeiShuUsers: 补写 POSIX 属性失败 [%s]: %v", oldData.Username, err2)
 				}

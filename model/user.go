@@ -25,6 +25,8 @@ type User struct {
 	SourceUnionId string  `gorm:"type:varchar(100);not null;comment:'第三方唯一unionId'" json:"sourceUnionId"`            // 第三方唯一unionId
 	UserDN        string  `gorm:"type:varchar(255);not null;comment:'用户dn'" json:"userDn"`                           // 用户在ldap的dn
 	SyncState     uint    `gorm:"type:tinyint(1);default:1;comment:'同步状态:1已同步, 2未同步'" json:"syncState"`              // 数据到ldap的同步状态
+	UidNumber     int     `gorm:"-" json:"-"` // POSIX uidNumber，仅用于传递，不持久化到 DB
+	GidNumber     int     `gorm:"-" json:"-"` // POSIX gidNumber，仅用于传递，不持久化到 DB
 }
 
 func (u *User) SetUserName(userName string) {

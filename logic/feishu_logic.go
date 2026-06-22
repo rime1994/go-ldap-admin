@@ -121,10 +121,19 @@ func (d FeiShuLogic) SyncFeiShuUsers(c *gin.Context, req any) (data any, rspErro
 		common.Log.Errorf("SyncFeiShuUsers: %s", errMsg)
 		return nil, tools.NewOperationI18nError("sync.empty_users", nil)
 	}
-	// 2.遍历用户，开始写入
+	// 2.扫描 LDAP 已有 POSIX ID，用于去重分配
+	takenUID, takenGID, hasPosix, err := ildap.User.ScanPosixIDs()
+	if err != nil {
+		common.Log.Warnf("SyncFeiShuUsers: 扫描 LDAP POSIX ID 失败，降级为空集合: %v", err)
+		takenUID = make(map[int]bool)
+		takenGID = make(map[int]bool)
+		hasPosix = make(map[string]bool)
+	}
+
+	// 3.遍历用户，开始写入
 	for i, staff := range staffs {
 		// 入库
-		err = d.AddUsers(staff)
+		err = d.AddUsers(staff, takenUID, takenGID, hasPosix)
 		if err != nil {
 			errMsg := fmt.Sprintf("写入用户[%s]失败：%s", staff.Username, err.Error())
 			common.Log.Errorf("SyncFeiShuUsers: %s", errMsg)
@@ -133,14 +142,14 @@ func (d FeiShuLogic) SyncFeiShuUsers(c *gin.Context, req any) (data any, rspErro
 		common.Log.Infof("SyncFeiShuUsers: 成功同步用户[%s] (%d/%d)", staff.Username, i+1, len(staffs))
 	}
 
-	// 3.获取飞书已离职用户id列表
+	// 4.获取飞书已离职用户id列表
 	userIds, err := feishu.GetLeaveUserIds()
 	if err != nil {
 		errMsg := fmt.Sprintf("获取飞书离职用户列表失败：%s", err.Error())
 		common.Log.Errorf("SyncFeiShuUsers: %s", errMsg)
 		return nil, tools.NewOperationI18nError("sync.leave_user_list_failed", i18n.Args{"provider": "Feishu", "error": err.Error()})
 	}
-	// 4.遍历id，开始处理
+	// 5.遍历id，开始处理
 	processedCount := 0
 	for _, uid := range userIds {
 		if isql.User.Exist(
@@ -179,7 +188,7 @@ func (d FeiShuLogic) SyncFeiShuUsers(c *gin.Context, req any) (data any, rspErro
 }
 
 // AddUser 添加用户数据
-func (d FeiShuLogic) AddUsers(user *model.User) error {
+func (d FeiShuLogic) AddUsers(user *model.User, takenUID, takenGID map[int]bool, hasPosix map[string]bool) error {
 	// 根据角色id获取角色
 	roles, err := isql.Role.GetRolesByIds([]uint{2})
 	if err != nil {
@@ -219,12 +228,37 @@ func (d FeiShuLogic) AddUsers(user *model.User) error {
 		}
 		user.Departments = strings.TrimRight(deptTmp, ",")
 
+		// 分配 POSIX ID
+		gidSeed := "default"
+		if len(groups) > 0 {
+			gidSeed = groups[0].SourceDeptId
+		}
+		user.UidNumber = tools.GeneratePosixID(user.SourceUserId, takenUID)
+		user.GidNumber = tools.GeneratePosixID(gidSeed, takenGID)
+
 		// 添加用户
 		err = CommonAddUser(user, groups)
 		if err != nil {
 			return tools.NewOperationI18nError("sync.add_user_failed", i18n.Args{"username": user.Username, "error": err.Error()})
 		}
 	} else {
+		// 存量用户：若缺少 posixAccount，无论是否开启 IsUpdateSyncd 都补写
+		if !hasPosix[user.SourceUserId] {
+			oldData := new(model.User)
+			if err2 := isql.User.Find(tools.H{"source_user_id": user.SourceUserId}, oldData); err2 == nil {
+				bGroups, _ := isql.Group.GetGroupByIds(tools.StringToSlice(oldData.DepartmentId, ","))
+				gidSeed := "default"
+				if len(bGroups) > 0 {
+					gidSeed = bGroups[0].SourceDeptId
+				}
+				uidNum := tools.GeneratePosixID(user.SourceUserId, takenUID)
+				gidNum := tools.GeneratePosixID(gidSeed, takenGID)
+				if err2 = ildap.User.BackfillPosixAttrs(oldData.UserDN, uidNum, gidNum, oldData.Username); err2 != nil {
+					common.Log.Warnf("SyncFeiShuUsers: 补写 POSIX 属性失败 [%s]: %v", oldData.Username, err2)
+				}
+			}
+		}
+
 		// 此处逻辑未经实际验证，如在使用中有问题，请反馈
 		if config.Conf.FeiShu.IsUpdateSyncd {
 			// 先获取用户信息
